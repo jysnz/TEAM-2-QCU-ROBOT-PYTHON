@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------------------- #
 #                                                                              #
-# 	Module:       main.py                                                      #
-# 	Author:       [Your Name]                                                  #
-# 	Created:      [Date]                                                       #
-# 	Description:  VEX V5 Competition Template                                  #
+#   Module:       main.py                                                      #
+#   Author:       [Your Name]                                                  #
+#   Created:      [Date]                                                       #
+#   Description:  VEX V5 Competition Template (Updated with Safety Break)      #
 #                                                                              #
 # ---------------------------------------------------------------------------- #
 
@@ -12,27 +12,41 @@ from vex import *
 
 # =============================================================================
 # 1. ROBOT CONFIGURATION
-#    Initialize your devices (Motors, Sensors, Controller) here.
 # =============================================================================
 
 # Brain and Controller
 brain = Brain()
 controller_1 = Controller()
 
-# Motors (Example: 4-Motor Drivetrain)
-# Format: Motor(Ports.PORT1, GearSetting.RATIO_18_1, False) 
-# "False" = Forward, "True" = Reverse
+# Motors (Drivetrain)
 left_front = Motor(Ports.PORT1, GearSetting.RATIO_18_1, False)
+left_middle = Motor(Ports.PORT3, GearSetting.RATIO_18_1, False)
 left_back  = Motor(Ports.PORT2, GearSetting.RATIO_18_1, False)
 right_front = Motor(Ports.PORT9, GearSetting.RATIO_18_1, True)
+right_middle = Motor(Ports.PORT8, GearSetting.RATIO_18_1, True)
 right_back  = Motor(Ports.PORT10, GearSetting.RATIO_18_1, True)
 
-# Motor Groups (Optional but recommended for easier coding)
-left_drive_group = MotorGroup(left_front, left_back)
-right_drive_group = MotorGroup(right_front, right_back)
+left_drive_group = MotorGroup(left_front, left_middle, left_back)
+right_drive_group = MotorGroup(right_front, right_middle, right_back)
 
-# Mechanism Motors (Intake, Lift, etc.)
+# Mechanism Motors
 intake_motor = Motor(Ports.PORT5, GearSetting.RATIO_6_1, False)
+match_loader = Motor(Ports.PORT4, GearSetting.RATIO_6_1, False)
+
+# --- UPDATED: CATAPULT MOTOR (Now 0-45 degrees) ---
+catapult_motor = Motor(Ports.PORT6, GearSetting.RATIO_36_1, False)
+catapult_motor.set_stopping(HOLD)
+catapult_motor.set_velocity(60, PERCENT) 
+catapult_motor.reset_position() 
+
+# --- NEW: CATAPULT ARM (0-125 degrees) ---
+# Assuming Port 7 is free. Change this if needed.
+catapult_arm = Motor(Ports.PORT7, GearSetting.RATIO_36_1, False)
+catapult_arm.set_stopping(HOLD) # Holds position when stopped
+catapult_arm.set_velocity(50, PERCENT)
+catapult_arm.reset_position()
+
+
 
 # Sensors
 inertial = Inertial(Ports.PORT15)
@@ -45,20 +59,29 @@ inertial = Inertial(Ports.PORT15)
 DRIVE_SPEED = 80
 TURN_SPEED = 50
 INTAKE_SPEED = 100
+CATAPULT_SPEED = 60 
+MATCHLOADER_SPEED = 50
 
-# Deadzone (Prevents robot from creeping when joystick is slightly off-center)
+# Deadzone
 DEADZONE = 5
+
+# --- STATE VARIABLES ---
+# Catapult (Small) Variables
+catapult_is_up = False      
+r1_was_pressed = False 
+
+# Arm (Big) Variables
+arm_is_up = False
+r2_was_pressed = False
 
 # =============================================================================
 # 3. HELPER FUNCTIONS
-#    Create reusable functions to keep your code clean.
 # =============================================================================
 
-def drive_forward(distance_cm, speed):
+def drive_forward(distance_cm, speed, MM):
     """Moves the robot forward for a set distance."""
     left_drive_group.set_velocity(speed, PERCENT)
     right_drive_group.set_velocity(speed, PERCENT)
-    # Note: You will need to calculate turns_per_cm based on your wheel size
     left_drive_group.spin_for(FORWARD, distance_cm, MM, wait=False)
     right_drive_group.spin_for(FORWARD, distance_cm, MM, wait=True)
 
@@ -66,23 +89,43 @@ def turn_right(degrees, speed):
     """Turns the robot right."""
     left_drive_group.set_velocity(speed, PERCENT)
     right_drive_group.set_velocity(speed, PERCENT)
-    # Spin directions must be opposite
     left_drive_group.spin_for(FORWARD, degrees, DEGREES, wait=False)
     right_drive_group.spin_for(REVERSE, degrees, DEGREES, wait=True)
+
+# --- NEW: SAFETY BREAK FUNCTION ---
+def move_motor_safely(motor_obj, target_degrees, speed):
+    """
+    Moves a motor to a position, but stops immediately (BREAK)
+    if the motor stops moving (hits a part) before reaching the target.
+    """
+    # 1. Start moving the motor (Non-blocking)
+    motor_obj.spin_to_position(target_degrees, DEGREES, speed, PERCENT, wait=False)
+    
+    # 2. Wait a tiny bit to let the motor start moving so we don't detect false stop
+    wait(200, MSEC)
+
+    # 3. Monitor the motor while it is supposed to be spinning
+    while motor_obj.is_spinning():
+        
+        # Check current velocity
+        current_velocity = motor_obj.velocity(PERCENT)
+        
+        # If velocity is less than 2% (stalled/hit something)
+        if abs(current_velocity) < 2:
+            # FORCE STOP / BRAKE
+            motor_obj.stop(BRAKE)
+            brain.screen.print("OBSTRUCTION DETECTED!")
+            break # Exit the loop
+            
+        wait(20, MSEC)
 
 # =============================================================================
 # 4. COMPETITION FUNCTIONS
 # =============================================================================
 
 def pre_autonomous():
-    """
-    Run this BEFORE the match starts.
-    Use this to calibrate gyros, reset encoders, or select auton routines.
-    """
     brain.screen.print("Calibrating Inertial...")
     inertial.calibrate()
-    
-    # Wait for calibration to finish (usually 2-3 seconds)
     while inertial.is_calibrating():
         wait(100, MSEC)
         
@@ -90,72 +133,98 @@ def pre_autonomous():
     brain.screen.set_cursor(1, 1)
     brain.screen.print("System Ready!")
     
-    # Reset motor encoders
     left_drive_group.reset_position()
     right_drive_group.reset_position()
+    
+    catapult_motor.reset_position()
+    catapult_arm.reset_position()
 
 def autonomous():
-    """
-    The autonomous period logic.
-    """
     brain.screen.print("Running Autonomous")
-    
-    # Example Routine
-    drive_forward(500, DRIVE_SPEED) # Drive 500mm
-    wait(200, MSEC)                 # Short pause to settle
-    turn_right(90, TURN_SPEED)      # Turn 90 degrees
-    
-    # Intake example
-    intake_motor.spin(FORWARD, 100, PERCENT)
+    # Example: Move the new arm safely
+    move_motor_safely(catapult_arm, 125, 50)
 
 def user_control():
-    """
-    The driver control period logic.
-    """
+    global catapult_is_up, r1_was_pressed, matchloader_on
+    global arm_is_up, r2_was_pressed
+    
     brain.screen.print("Driver Control")
 
     while True:
-        # --- ARCADE DRIVE CONTROL ---
-        # Axis3 = Forward/Backward
-        # Axis1 = Turning Left/Right
-        
+        # --- DRIVETRAIN (Arcade) ---
         axis3_pos = controller_1.axis3.position()
         axis1_pos = controller_1.axis1.position()
 
-        # Apply Deadzone Logic
-        if abs(axis3_pos) < DEADZONE:
-            axis3_pos = 0
-        if abs(axis1_pos) < DEADZONE:
-            axis1_pos = 0
+        if abs(axis3_pos) < DEADZONE: axis3_pos = 0
+        if abs(axis1_pos) < DEADZONE: axis1_pos = 0
 
-        # Calculate motor speeds
-        left_speed = axis3_pos + axis1_pos
-        right_speed = axis3_pos - axis1_pos
+        left_speed = -axis3_pos + axis1_pos
+        right_speed = -axis3_pos - axis1_pos
 
-        # Spin motors
         left_drive_group.spin(FORWARD, left_speed, PERCENT)
         right_drive_group.spin(FORWARD, right_speed, PERCENT)
 
-        # --- MECHANISM CONTROLS ---
-        
-        # Intake Control (L1 to spin, L2 to stop/reverse)
-        if controller_1.buttonL1.pressing():
-            intake_motor.spin(FORWARD, INTAKE_SPEED, PERCENT)
-        elif controller_1.buttonL2.pressing():
+        # --- OUTTAKE (L2/R2) ---
+        if controller_1.buttonL2.pressing() and controller_1.buttonR2.pressing():
             intake_motor.spin(REVERSE, INTAKE_SPEED, PERCENT)
         else:
-            intake_motor.stop() # or set to hold if needed
+            intake_motor.stop()
 
-        # --- SYSTEM PAUSE ---
-        # CRITICAL: Must have a wait to prevent the Brain from freezing
+        # --- INTAKE (L1/R1) ---
+        if controller_1.buttonL1.pressing() and controller_1.buttonR1.pressing():
+            intake_motor.spin(FORWARD, INTAKE_SPEED, PERCENT)
+        else:
+            intake_motor.stop()
+        
+        #Matchload
+        if controller_1.buttonB.pressing():
+            move_motor_safely(match_loader, -75, MATCHLOADER_SPEED)
+            match_loader.stop(BRAKE)
+        else:
+            match_loader.stop()
+
+        if controller_1.buttonDown.pressing():
+            left_speed = axis3_pos + axis1_pos
+            right_speed = axis3_pos - axis1_pos
+        else:
+            left_speed = -axis3_pos + axis1_pos
+            right_speed = -axis3_pos - axis1_pos
+            
+        # --- UPDATED: ORIGINAL CATAPULT (R1) -> Goes 0 to 45 ---
+        if controller_1.buttonR1.pressing():
+            if not r1_was_pressed: 
+                if catapult_is_up:
+                    # Go down to 0
+                    move_motor_safely(catapult_motor, 0, CATAPULT_SPEED)
+                    catapult_is_up = False
+                else:
+                    # Go up to 45 (Updated Range)
+                    move_motor_safely(catapult_motor, 45, CATAPULT_SPEED)
+                    catapult_is_up = True
+                r1_was_pressed = True
+        else:
+            r1_was_pressed = False
+
+        # --- NEW: CATAPULT ARM (R2) -> Goes 0 to 125 ---
+        if controller_1.buttonR2.pressing():
+            if not r2_was_pressed: 
+                if arm_is_up:
+                    # Go down to 0
+                    move_motor_safely(catapult_arm, 0, 50)
+                    arm_is_up = False
+                else:
+                    # Go up to 125
+                    move_motor_safely(catapult_arm, 125, 50)
+                    arm_is_up = True
+                r2_was_pressed = True
+        else:
+            r2_was_pressed = False
+
         wait(20, MSEC)
 
 # =============================================================================
 # 5. MAIN EXECUTION
 # =============================================================================
 
-# Create the competition object
 comp = Competition(user_control, autonomous)
-
-# Run the pre-autonomous function
 pre_autonomous()
